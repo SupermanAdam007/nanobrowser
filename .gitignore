@@ -27,5 +27,14 @@ chrome-extension/public/manifest.json
 
 .nanobrowser
 .vscode
-.cursor
+
+# Ignore most cursor editor state, but track shared rules and skills
+.cursor/*
+!.cursor/rules
+!.cursor/rules/**
+!.cursor/skills
+!.cursor/skills/**
+
+# Ignore Python bytecode/local scripts, but allow skill scripts
 *.py
+!.cursor/skills/**/scripts/*.py
