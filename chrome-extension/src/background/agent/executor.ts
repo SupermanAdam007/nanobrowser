@@ -20,11 +20,11 @@ import {
   MaxFailuresReachedError,
 } from './agents/errors';
 import { URLNotAllowedError } from '../browser/views';
-import { chatHistoryStore } from '@extension/storage/lib/chat';
+import { chatHistoryStore, type GeneralSettingsConfig, type SessionOutcome } from '@extension/storage';
 import type { AgentStepHistory } from './history';
-import type { GeneralSettingsConfig } from '@extension/storage';
 import { analytics } from '../services/analytics';
 import type { AgentLLM } from './providers';
+import { SessionLogger } from './session-logger';
 
 const logger = createLogger('Executor');
 
@@ -116,6 +116,16 @@ export class Executor {
     context.nSteps = 0;
     const allowedMaxSteps = this.context.options.maxSteps;
 
+    const sessionLogger = new SessionLogger(
+      this.context.taskId,
+      this.tasks[0],
+      this.navigator.modelId,
+      this.planner.modelId,
+    );
+
+    let sessionOutcome: SessionOutcome = 'failed';
+    let sessionErrorMessage: string | undefined;
+
     try {
       this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_START, this.context.taskId);
       void analytics.trackTaskStart(this.context.taskId);
@@ -136,10 +146,19 @@ export class Executor {
         if (this.planner && (context.nSteps % context.options.planningInterval === 0 || navigatorDone)) {
           navigatorDone = false;
           latestPlanOutput = await this.runPlanner();
+          if (latestPlanOutput?.result) {
+            sessionLogger.recordPlan(latestPlanOutput.result.next_steps, latestPlanOutput.result.observation);
+          }
           if (this.checkTaskCompletion(latestPlanOutput)) break;
         }
 
         navigatorDone = await this.navigate();
+
+        const latestRecord = context.history.history[context.history.history.length - 1];
+        if (latestRecord) {
+          sessionLogger.recordStep(latestRecord);
+        }
+
         if (navigatorDone) {
           logger.info('🔄 Navigator indicates completion - will be validated by next planner run');
         }
@@ -148,16 +167,19 @@ export class Executor {
       const isCompleted = latestPlanOutput?.result?.done === true;
 
       if (isCompleted) {
+        sessionOutcome = 'complete';
         const finalMessage = this.context.finalAnswer || this.context.taskId;
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_OK, finalMessage);
         void analytics.trackTaskComplete(this.context.taskId);
       } else if (step >= allowedMaxSteps) {
+        sessionOutcome = 'max_steps';
         logger.error('❌ Task failed: Max steps reached');
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_errors_maxStepsReached'));
         const maxStepsError = new MaxStepsReachedError(t('exec_errors_maxStepsReached'));
         const errorCategory = analytics.categorizeError(maxStepsError);
         void analytics.trackTaskFailed(this.context.taskId, errorCategory);
       } else if (this.context.stopped) {
+        sessionOutcome = 'cancelled';
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
         void analytics.trackTaskCancelled(this.context.taskId);
       } else {
@@ -165,15 +187,24 @@ export class Executor {
       }
     } catch (error) {
       if (error instanceof RequestCancelledError) {
+        sessionOutcome = 'cancelled';
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
         void analytics.trackTaskCancelled(this.context.taskId);
       } else {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_task_fail', [errorMessage]));
-        const errorCategory = analytics.categorizeError(error instanceof Error ? error : errorMessage);
+        sessionOutcome = 'failed';
+        sessionErrorMessage = error instanceof Error ? error.message : String(error);
+        this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_task_fail', [sessionErrorMessage]));
+        const errorCategory = analytics.categorizeError(error instanceof Error ? error : sessionErrorMessage);
         void analytics.trackTaskFailed(this.context.taskId, errorCategory);
       }
     } finally {
+      await sessionLogger.finalize(
+        sessionOutcome,
+        context.nSteps,
+        this.context.finalAnswer ?? undefined,
+        sessionErrorMessage,
+      );
+
       if (import.meta.env.DEV) {
         logger.debug('Executor history', JSON.stringify(this.context.history, null, 2));
       }
