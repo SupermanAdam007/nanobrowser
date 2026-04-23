@@ -28,7 +28,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettingsConfig = {
   maxFailures: 3,
   useVision: false,
   useVisionForPlanner: false,
-  planningInterval: 3,
+  planningInterval: 5,
   displayHighlights: true,
   minWaitPageLoad: 250,
   replayHistoricalTasks: false,

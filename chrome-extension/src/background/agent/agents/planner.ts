@@ -21,7 +21,6 @@ const logger = createLogger('PlannerAgent');
 // Define Zod schema for planner output
 export const plannerOutputSchema = z.object({
   observation: z.string(),
-  challenges: z.string(),
   done: z.union([
     z.boolean(),
     z.string().transform(val => {
@@ -32,15 +31,6 @@ export const plannerOutputSchema = z.object({
   ]),
   next_steps: z.string(),
   final_answer: z.string(),
-  reasoning: z.string(),
-  web_task: z.union([
-    z.boolean(),
-    z.string().transform(val => {
-      if (val.toLowerCase() === 'true') return true;
-      if (val.toLowerCase() === 'false') return false;
-      throw new Error('Invalid boolean string');
-    }),
-  ]),
 });
 
 export type PlannerOutput = z.infer<typeof plannerOutputSchema>;
@@ -79,14 +69,10 @@ export class PlannerAgent extends BaseAgent<typeof plannerOutputSchema, PlannerO
       const observation = filterExternalContent(modelOutput.observation);
       const final_answer = filterExternalContent(modelOutput.final_answer);
       const next_steps = filterExternalContent(modelOutput.next_steps);
-      const challenges = filterExternalContent(modelOutput.challenges);
-      const reasoning = filterExternalContent(modelOutput.reasoning);
 
       const cleanedPlan: PlannerOutput = {
         ...modelOutput,
         observation,
-        challenges,
-        reasoning,
         final_answer,
         next_steps,
       };
