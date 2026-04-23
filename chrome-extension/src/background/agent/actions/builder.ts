@@ -26,7 +26,6 @@ import {
 import { z } from 'zod';
 import { createLogger } from '@src/background/log';
 import { ExecutionState, Actors } from '../event/types';
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { wrapUntrustedContent } from '../messages/utils';
 
 const logger = createLogger('Action');
@@ -142,11 +141,9 @@ export function buildDynamicActionSchema(actions: Action[]): z.ZodType {
 
 export class ActionBuilder {
   private readonly context: AgentContext;
-  private readonly extractorLLM: BaseChatModel;
 
-  constructor(context: AgentContext, extractorLLM: BaseChatModel) {
+  constructor(context: AgentContext) {
     this.context = context;
-    this.extractorLLM = extractorLLM;
   }
 
   buildDefaultActions() {

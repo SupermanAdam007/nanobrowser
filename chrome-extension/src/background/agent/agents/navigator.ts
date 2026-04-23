@@ -5,7 +5,7 @@ import { ActionResult, type AgentOutput } from '../types';
 import type { Action } from '../actions/builder';
 import { buildDynamicActionSchema } from '../actions/builder';
 import { agentBrainSchema } from '../types';
-import { type BaseMessage, HumanMessage } from '@langchain/core/messages';
+import type { UserModelMessage } from 'ai';
 import { Actors, ExecutionState } from '../event/types';
 import {
   ChatModelAuthError,
@@ -18,25 +18,17 @@ import {
   isBadRequestError,
   isExtensionConflictError,
   isForbiddenError,
-  ResponseParseError,
   LLM_FORBIDDEN_ERROR_MESSAGE,
   RequestCancelledError,
 } from './errors';
 import { calcBranchPathHashSet } from '@src/background/browser/dom/views';
 import { type BrowserState, BrowserStateHistory, URLNotAllowedError } from '@src/background/browser/views';
-import { convertZodToJsonSchema, repairJsonString } from '@src/background/utils';
 import { HistoryTreeProcessor } from '@src/background/browser/dom/history/service';
 import { AgentStepRecord } from '../history';
 import { type DOMHistoryElement } from '@src/background/browser/dom/history/view';
+import { parseHistoryModelOutput, updateActionIndices, type ParsedModelOutput } from './navigator-replay';
 
 const logger = createLogger('NavigatorAgent');
-
-interface ParsedModelOutput {
-  current_state?: {
-    next_goal?: string;
-  };
-  action?: (Record<string, unknown> | null)[] | null;
-}
 
 export class NavigatorActionRegistry {
   private actions: Record<string, Action> = {};
@@ -74,7 +66,6 @@ export interface NavigatorResult {
 
 export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
   private actionRegistry: NavigatorActionRegistry;
-  private jsonSchema: Record<string, unknown>;
   private _stateHistory: BrowserStateHistory | null = null;
 
   constructor(
@@ -83,76 +74,7 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     extraOptions?: Partial<ExtraAgentOptions>,
   ) {
     super(actionRegistry.setupModelOutputSchema(), options, { ...extraOptions, id: 'navigator' });
-
     this.actionRegistry = actionRegistry;
-
-    // The zod object is too complex to be used directly, so we need to convert it to json schema first for the model to use
-    this.jsonSchema = convertZodToJsonSchema(this.modelOutputSchema, 'NavigatorAgentOutput', true);
-  }
-
-  async invoke(inputMessages: BaseMessage[]): Promise<this['ModelOutput']> {
-    // Use structured output
-    if (this.withStructuredOutput) {
-      const structuredLlm = this.chatLLM.withStructuredOutput(this.jsonSchema, {
-        includeRaw: true,
-        name: this.modelOutputToolName,
-      });
-
-      let response = undefined;
-      try {
-        response = await structuredLlm.invoke(inputMessages, {
-          signal: this.context.controller.signal,
-          ...this.callOptions,
-        });
-
-        if (response.parsed) {
-          return response.parsed;
-        }
-      } catch (error) {
-        if (isAbortedError(error)) {
-          throw error;
-        }
-
-        // Try to extract JSON from markdown code blocks if parsing failed
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (
-          errorMessage.includes('is not valid JSON') &&
-          response?.raw?.content &&
-          typeof response.raw.content === 'string'
-        ) {
-          const parsed = this.manuallyParseResponse(response.raw.content);
-          if (parsed) {
-            return parsed;
-          }
-        }
-        throw new Error(`Failed to invoke ${this.modelName} with structured output: \n${errorMessage}`);
-      }
-
-      // Use type assertion to access the properties
-      const rawResponse = response.raw as BaseMessage & {
-        tool_calls?: Array<{
-          args: {
-            currentState: typeof agentBrainSchema._type;
-            action: z.infer<ReturnType<typeof buildDynamicActionSchema>>;
-          };
-        }>;
-      };
-
-      // sometimes LLM returns an empty content, but with one or more tool calls, so we need to check the tool calls
-      if (rawResponse.tool_calls && rawResponse.tool_calls.length > 0) {
-        logger.info('Navigator structuredLlm tool call with empty content', rawResponse.tool_calls);
-        // only use the first tool call
-        const toolCall = rawResponse.tool_calls[0];
-        return {
-          current_state: toolCall.args.currentState,
-          action: [...toolCall.args.action],
-        };
-      }
-      throw new ResponseParseError('Could not parse navigator response');
-    }
-
-    // Fallback to parent class manual JSON extraction for models without structured output support
-    return super.invoke(inputMessages);
   }
 
   async execute(): Promise<AgentOutput<NavigatorResult>> {
@@ -284,18 +206,13 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
       for (const r of this.context.actionResults) {
         if (r.includeInMemory) {
           if (r.extractedContent) {
-            const msg = new HumanMessage(`Action result: ${r.extractedContent}`);
-            // logger.info('Adding action result to memory', msg.content);
+            const msg: UserModelMessage = { role: 'user', content: `Action result: ${r.extractedContent}` };
             messageManager.addMessageWithTokens(msg);
           }
           if (r.error) {
-            // Get error text and convert to string
             const errorText = r.error.toString().trim();
-
-            // Get only the last line of the error
-            const lastLine = errorText.split('\n').pop() || '';
-
-            const msg = new HumanMessage(`Action error: ${lastLine}`);
+            const lastLine = errorText.split('\n').pop() ?? '';
+            const msg: UserModelMessage = { role: 'user', content: `Action error: ${lastLine}` };
             logger.info('Adding action error to memory', msg.content);
             messageManager.addMessageWithTokens(msg);
           }
@@ -327,40 +244,14 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     messageManager.addModelOutput(modelOutput);
   }
 
-  /**
-   * Fix the actions to be an array of objects, sometimes the action is a string or an object
-   * @param response
-   * @returns
-   */
   private fixActions(response: this['ModelOutput']): Record<string, unknown>[] {
-    let actions: Record<string, unknown>[] = [];
-    if (Array.isArray(response.action)) {
-      // if the item is null, skip it
-      actions = response.action.filter((item: unknown) => item !== null);
-      if (actions.length === 0) {
-        logger.warning('No valid actions found', response.action);
-      }
-    } else if (typeof response.action === 'string') {
-      try {
-        logger.warning('Unexpected action format', response.action);
-        // First try to parse the action string directly
-        actions = JSON.parse(response.action);
-      } catch (parseError) {
-        try {
-          // If direct parsing fails, try to fix the JSON first
-          const fixedAction = repairJsonString(response.action);
-          logger.info('Fixed action string', fixedAction);
-          actions = JSON.parse(fixedAction);
-        } catch (error) {
-          logger.error('Invalid action format even after repair attempt', response.action);
-          throw new Error('Invalid action output format');
-        }
-      }
-    } else {
-      // if the action is neither an array nor a string, it should be an object
-      actions = [response.action];
+    if (!Array.isArray(response.action)) {
+      logger.warning('Unexpected action format, expected array', response.action);
+      return [];
     }
-    return actions;
+    return (response.action as (Record<string, unknown> | null)[]).filter(
+      (item): item is Record<string, unknown> => item !== null,
+    );
   }
 
   private async doMultiAction(actions: Record<string, unknown>[]): Promise<ActionResult[]> {
@@ -458,46 +349,6 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     return results;
   }
 
-  /**
-   * Parse and validate model output from history item
-   */
-  private parseHistoryModelOutput(historyItem: AgentStepRecord): {
-    parsedOutput: ParsedModelOutput;
-    goal: string;
-    actionsToReplay: (Record<string, unknown> | null)[] | null;
-  } {
-    if (!historyItem.modelOutput) {
-      throw new Error('No model output found in history item');
-    }
-
-    let parsedOutput: ParsedModelOutput;
-    try {
-      parsedOutput = JSON.parse(historyItem.modelOutput) as ParsedModelOutput;
-    } catch (error) {
-      throw new Error(`Could not parse modelOutput: ${error}`);
-    }
-
-    // logger.info('Parsed output', JSON.stringify(parsedOutput, null, 2));
-
-    const goal = parsedOutput?.current_state?.next_goal || '';
-    const actionsToReplay = parsedOutput?.action;
-
-    // Validate that there are actions to replay
-    if (
-      !parsedOutput || // No model output string at all
-      !actionsToReplay || // 'action' field is missing or null after parsing
-      (Array.isArray(actionsToReplay) && actionsToReplay.length === 0) || // 'action' is an empty array
-      (Array.isArray(actionsToReplay) && actionsToReplay.length === 1 && actionsToReplay[0] === null) // 'action' is [null]
-    ) {
-      throw new Error('No action to replay');
-    }
-
-    return { parsedOutput, goal, actionsToReplay };
-  }
-
-  /**
-   * Execute actions from history with element index updates
-   */
   private async executeHistoryActions(
     parsedOutput: ParsedModelOutput,
     historyItem: AgentStepRecord,
@@ -529,7 +380,7 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
         continue;
       }
 
-      const updatedAction = await this.updateActionIndices(interactedElement, currentAction, state);
+      const updatedAction = await updateActionIndices(interactedElement, currentAction, state, this.actionRegistry);
       updatedActions.push(updatedAction);
 
       if (updatedAction === null) {
@@ -566,7 +417,7 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
       actionsToReplay: (Record<string, unknown> | null)[] | null;
     };
     try {
-      parsedData = this.parseHistoryModelOutput(historyItem);
+      parsedData = parseHistoryModelOutput(historyItem);
     } catch (error) {
       const errorMsg = `Step ${stepIndex + 1}: ${error instanceof Error ? error.message : String(error)}`;
       replayLogger.warning(errorMsg);
@@ -625,54 +476,5 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     }
 
     return results;
-  }
-
-  async updateActionIndices(
-    historicalElement: DOMHistoryElement,
-    action: Record<string, unknown>,
-    currentState: BrowserState,
-  ): Promise<Record<string, unknown> | null> {
-    // If no historical element or no element tree in current state, return the action unchanged
-    if (!historicalElement || !currentState.elementTree) {
-      return action;
-    }
-
-    // Find the current element in the tree based on the historical element
-    const currentElement = await HistoryTreeProcessor.findHistoryElementInTree(
-      historicalElement,
-      currentState.elementTree,
-    );
-
-    // If no current element found or it doesn't have a highlight index, return null
-    if (!currentElement || currentElement.highlightIndex === null) {
-      return null;
-    }
-
-    // Get action name and args
-    const actionName = Object.keys(action)[0];
-    const actionArgs = action[actionName] as Record<string, unknown>;
-
-    // Get the action instance to access the index
-    const actionInstance = this.actionRegistry.getAction(actionName);
-    if (!actionInstance) {
-      return action;
-    }
-
-    // Get the index argument from the action
-    const oldIndex = actionInstance.getIndexArg(actionArgs);
-
-    // If the index has changed, update it
-    if (oldIndex !== null && oldIndex !== currentElement.highlightIndex) {
-      // Create a new action object with the updated index
-      const updatedAction: Record<string, unknown> = { [actionName]: { ...actionArgs } };
-
-      // Update the index in the action arguments
-      actionInstance.setIndexArg(updatedAction[actionName] as Record<string, unknown>, currentElement.highlightIndex);
-
-      logger.info(`Element moved in DOM, updated index from ${oldIndex} to ${currentElement.highlightIndex}`);
-      return updatedAction;
-    }
-
-    return action;
   }
 }

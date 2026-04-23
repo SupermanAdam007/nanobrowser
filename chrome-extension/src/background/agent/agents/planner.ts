@@ -2,7 +2,7 @@ import { BaseAgent, type BaseAgentOptions, type ExtraAgentOptions } from './base
 import { createLogger } from '@src/background/log';
 import { z } from 'zod';
 import type { AgentOutput } from '../types';
-import { HumanMessage } from '@langchain/core/messages';
+import type { UserModelMessage } from 'ai';
 import { Actors, ExecutionState } from '../event/types';
 import {
   ChatModelAuthError,
@@ -55,26 +55,19 @@ export class PlannerAgent extends BaseAgent<typeof plannerOutputSchema, PlannerO
       this.context.emitEvent(Actors.PLANNER, ExecutionState.STEP_START, 'Planning...');
       // get all messages from the message manager, state message should be the last one
       const messages = this.context.messageManager.getMessages();
-      // Use full message history except the first one
       const plannerMessages = [this.prompt.getSystemMessage(), ...messages.slice(1)];
 
-      // Remove images from last message if vision is not enabled for planner but vision is enabled
+      // Strip images from last message when vision is disabled for planner
       if (!this.context.options.useVisionForPlanner && this.context.options.useVision) {
-        const lastStateMessage = plannerMessages[plannerMessages.length - 1];
-        let newMsg = '';
-
-        if (Array.isArray(lastStateMessage.content)) {
-          for (const msg of lastStateMessage.content) {
-            if (msg.type === 'text') {
-              newMsg += msg.text;
-            }
-            // Skip image_url messages
-          }
-        } else {
-          newMsg = lastStateMessage.content;
+        const lastMsg = plannerMessages[plannerMessages.length - 1];
+        if (lastMsg.role === 'user' && Array.isArray(lastMsg.content)) {
+          const textOnly = (lastMsg.content as { type: string; text?: string }[])
+            .filter(part => part.type === 'text')
+            .map(part => part.text ?? '')
+            .join('');
+          const strippedMsg: UserModelMessage = { role: 'user', content: textOnly };
+          plannerMessages[plannerMessages.length - 1] = strippedMsg;
         }
-
-        plannerMessages[plannerMessages.length - 1] = new HumanMessage(newMsg);
       }
 
       const modelOutput = await this.invoke(plannerMessages);

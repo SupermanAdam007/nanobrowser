@@ -12,8 +12,8 @@ import BrowserContext from './browser/context';
 import { Executor } from './agent/executor';
 import { createLogger } from './log';
 import { ExecutionState } from './agent/event/types';
-import { createChatModel } from './agent/helper';
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { createModel } from './agent/providers';
+import type { AgentLLM } from './agent/providers';
 import { DEFAULT_AGENT_OPTIONS } from './agent/types';
 import { SpeechToTextService } from './services/speechToText';
 import { injectBuildDomTreeScripts } from './browser/dom/service';
@@ -289,14 +289,13 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
   }
   // Log the provider config being used for the navigator
   const navigatorProviderConfig = providers[navigatorModel.provider];
-  const navigatorLLM = createChatModel(navigatorProviderConfig, navigatorModel);
+  const navigatorLLM = createModel(navigatorProviderConfig, navigatorModel);
 
-  let plannerLLM: BaseChatModel | null = null;
+  let plannerLLM: AgentLLM | null = null;
   const plannerModel = agentModels[AgentNameEnum.Planner];
   if (plannerModel) {
-    // Log the provider config being used for the planner
     const plannerProviderConfig = providers[plannerModel.provider];
-    plannerLLM = createChatModel(plannerProviderConfig, plannerModel);
+    plannerLLM = createModel(plannerProviderConfig, plannerModel);
   }
 
   // Apply firewall settings to browser context
@@ -320,7 +319,7 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
   });
 
   const executor = new Executor(task, taskId, browserContext, navigatorLLM, {
-    plannerLLM: plannerLLM ?? navigatorLLM,
+    plannerLLM: plannerLLM ?? undefined,
     agentOptions: {
       maxSteps: generalSettings.maxSteps,
       maxFailures: generalSettings.maxFailures,

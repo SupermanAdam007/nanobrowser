@@ -1,4 +1,3 @@
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { type ActionResult, AgentContext, type AgentOptions, type AgentOutput } from './types';
 import { t } from '@extension/i18n';
 import { NavigatorAgent, NavigatorActionRegistry } from './agents/navigator';
@@ -25,12 +24,12 @@ import { chatHistoryStore } from '@extension/storage/lib/chat';
 import type { AgentStepHistory } from './history';
 import type { GeneralSettingsConfig } from '@extension/storage';
 import { analytics } from '../services/analytics';
+import type { AgentLLM } from './providers';
 
 const logger = createLogger('Executor');
 
 export interface ExecutorExtraArgs {
-  plannerLLM?: BaseChatModel;
-  extractorLLM?: BaseChatModel;
+  plannerLLM?: AgentLLM;
   agentOptions?: Partial<AgentOptions>;
   generalSettings?: GeneralSettingsConfig;
 }
@@ -43,17 +42,16 @@ export class Executor {
   private readonly navigatorPrompt: NavigatorPrompt;
   private readonly generalSettings: GeneralSettingsConfig | undefined;
   private tasks: string[] = [];
+
   constructor(
     task: string,
     taskId: string,
     browserContext: BrowserContext,
-    navigatorLLM: BaseChatModel,
+    navigatorLLM: AgentLLM,
     extraArgs?: Partial<ExecutorExtraArgs>,
   ) {
     const messageManager = new MessageManager();
-
     const plannerLLM = extraArgs?.plannerLLM ?? navigatorLLM;
-    const extractorLLM = extraArgs?.extractorLLM ?? navigatorLLM;
     const eventManager = new EventManager();
     const context = new AgentContext(
       taskId,
@@ -68,24 +66,22 @@ export class Executor {
     this.navigatorPrompt = new NavigatorPrompt(context.options.maxActionsPerStep);
     this.plannerPrompt = new PlannerPrompt();
 
-    const actionBuilder = new ActionBuilder(context, extractorLLM);
+    const actionBuilder = new ActionBuilder(context);
     const navigatorActionRegistry = new NavigatorActionRegistry(actionBuilder.buildDefaultActions());
 
-    // Initialize agents with their respective prompts
     this.navigator = new NavigatorAgent(navigatorActionRegistry, {
-      chatLLM: navigatorLLM,
-      context: context,
+      llm: navigatorLLM,
+      context,
       prompt: this.navigatorPrompt,
     });
 
     this.planner = new PlannerAgent({
-      chatLLM: plannerLLM,
-      context: context,
+      llm: plannerLLM,
+      context,
       prompt: this.plannerPrompt,
     });
 
     this.context = context;
-    // Initialize message history
     this.context.messageManager.initTaskMessages(this.navigatorPrompt.getSystemMessage(), task);
   }
 
@@ -94,21 +90,15 @@ export class Executor {
   }
 
   clearExecutionEvents(): void {
-    // Clear all execution event listeners
     this.context.eventManager.clearSubscribers(EventType.EXECUTION);
   }
 
   addFollowUpTask(task: string): void {
     this.tasks.push(task);
     this.context.messageManager.addNewTask(task);
-
-    // need to reset previous action results that are not included in memory
     this.context.actionResults = this.context.actionResults.filter(result => result.includeInMemory);
   }
 
-  /**
-   * Check if task is complete based on planner output and handle completion
-   */
   private checkTaskCompletion(planOutput: AgentOutput<PlannerOutput> | null): boolean {
     if (planOutput?.result?.done) {
       logger.info('✅ Planner confirms task completion');
@@ -120,22 +110,14 @@ export class Executor {
     return false;
   }
 
-  /**
-   * Execute the task
-   *
-   * @returns {Promise<void>}
-   */
   async execute(): Promise<void> {
     logger.info(`🚀 Executing task: ${this.tasks[this.tasks.length - 1]}`);
-    // reset the step counter
     const context = this.context;
     context.nSteps = 0;
     const allowedMaxSteps = this.context.options.maxSteps;
 
     try {
       this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_START, this.context.taskId);
-
-      // Track task start
       void analytics.trackTaskStart(this.context.taskId);
 
       let step = 0;
@@ -149,68 +131,45 @@ export class Executor {
         };
 
         logger.info(`🔄 Step ${step + 1} / ${allowedMaxSteps}`);
-        if (await this.shouldStop()) {
-          break;
-        }
+        if (await this.shouldStop()) break;
 
-        // Run planner periodically for guidance
         if (this.planner && (context.nSteps % context.options.planningInterval === 0 || navigatorDone)) {
           navigatorDone = false;
           latestPlanOutput = await this.runPlanner();
-
-          // Check if task is complete after planner run
-          if (this.checkTaskCompletion(latestPlanOutput)) {
-            break;
-          }
+          if (this.checkTaskCompletion(latestPlanOutput)) break;
         }
 
-        // Execute navigator
         navigatorDone = await this.navigate();
-
-        // If navigator indicates completion, the next periodic planner run will validate it
         if (navigatorDone) {
           logger.info('🔄 Navigator indicates completion - will be validated by next planner run');
         }
       }
 
-      // Determine task completion status
       const isCompleted = latestPlanOutput?.result?.done === true;
 
       if (isCompleted) {
-        // Emit final answer if available, otherwise use task ID
         const finalMessage = this.context.finalAnswer || this.context.taskId;
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_OK, finalMessage);
-
-        // Track task completion
         void analytics.trackTaskComplete(this.context.taskId);
       } else if (step >= allowedMaxSteps) {
         logger.error('❌ Task failed: Max steps reached');
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_errors_maxStepsReached'));
-
-        // Track task failure with specific error category
         const maxStepsError = new MaxStepsReachedError(t('exec_errors_maxStepsReached'));
         const errorCategory = analytics.categorizeError(maxStepsError);
         void analytics.trackTaskFailed(this.context.taskId, errorCategory);
       } else if (this.context.stopped) {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
-
-        // Track task cancellation
         void analytics.trackTaskCancelled(this.context.taskId);
       } else {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_PAUSE, t('exec_task_pause'));
-        // Note: We don't track pause as it's not a final state
       }
     } catch (error) {
       if (error instanceof RequestCancelledError) {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
-
-        // Track task cancellation
         void analytics.trackTaskCancelled(this.context.taskId);
       } else {
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_FAIL, t('exec_task_fail', [errorMessage]));
-
-        // Track task failure with detailed error categorization
         const errorCategory = analytics.categorizeError(error instanceof Error ? error : errorMessage);
         void analytics.trackTaskFailed(this.context.taskId, errorCategory);
       }
@@ -218,7 +177,6 @@ export class Executor {
       if (import.meta.env.DEV) {
         logger.debug('Executor history', JSON.stringify(this.context.history, null, 2));
       }
-      // store the history only if replay is enabled
       if (this.generalSettings?.replayHistoricalTasks) {
         const historyString = JSON.stringify(this.context.history);
         logger.info(`Executor history size: ${historyString.length}`);
@@ -229,13 +187,9 @@ export class Executor {
     }
   }
 
-  /**
-   * Helper method to run planner and store its output
-   */
   private async runPlanner(): Promise<AgentOutput<PlannerOutput> | null> {
     const context = this.context;
     try {
-      // Add current browser state to memory
       let positionForPlan = 0;
       if (this.tasks.length > 1 || this.context.nSteps > 0) {
         await this.navigator.addStateMessageToMemory();
@@ -244,7 +198,6 @@ export class Executor {
         positionForPlan = this.context.messageManager.length();
       }
 
-      // Execute planner
       const planOutput = await this.planner.execute();
       if (planOutput.result) {
         this.context.messageManager.addPlan(JSON.stringify(planOutput.result), positionForPlan);
@@ -274,24 +227,13 @@ export class Executor {
   private async navigate(): Promise<boolean> {
     const context = this.context;
     try {
-      // Get and execute navigation action
-      // check if the task is paused or stopped
-      if (context.paused || context.stopped) {
-        return false;
-      }
+      if (context.paused || context.stopped) return false;
       const navOutput = await this.navigator.execute();
-      // check if the task is paused or stopped
-      if (context.paused || context.stopped) {
-        return false;
-      }
+      if (context.paused || context.stopped) return false;
       context.nSteps++;
-      if (navOutput.error) {
-        throw new Error(navOutput.error);
-      }
+      if (navOutput.error) throw new Error(navOutput.error);
       context.consecutiveFailures = 0;
-      if (navOutput.result?.done) {
-        return true;
-      }
+      if (navOutput.result?.done) return true;
     } catch (error) {
       logger.error(`Failed to execute step: ${error}`);
       if (
@@ -321,9 +263,7 @@ export class Executor {
 
     while (this.context.paused) {
       await new Promise(resolve => setTimeout(resolve, 200));
-      if (this.context.stopped) {
-        return true;
-      }
+      if (this.context.stopped) return true;
     }
 
     if (this.context.consecutiveFailures >= this.context.options.maxFailures) {
@@ -358,15 +298,6 @@ export class Executor {
     return this.context.taskId;
   }
 
-  /**
-   * Replays a saved history of actions with error handling and retry logic.
-   *
-   * @param history - The history to replay
-   * @param maxRetries - Maximum number of retries per action
-   * @param skipFailures - Whether to skip failed actions or stop execution
-   * @param delayBetweenActions - Delay between actions in seconds
-   * @returns List of action results
-   */
   async replayHistory(
     sessionId: string,
     maxRetries = 3,
@@ -394,13 +325,11 @@ export class Executor {
       for (let i = 0; i < history.history.length; i++) {
         const historyItem = history.history[i];
 
-        // Check if execution should stop
         if (this.context.stopped) {
           replayLogger.info('Replay stopped by user');
           break;
         }
 
-        // Execute the history step with enhanced method that handles all the logic
         const stepResults = await this.navigator.executeHistoryStep(
           historyItem,
           i,
@@ -412,10 +341,7 @@ export class Executor {
 
         results.push(...stepResults);
 
-        // If stopped during execution, break the loop
-        if (this.context.stopped) {
-          break;
-        }
+        if (this.context.stopped) break;
       }
 
       if (this.context.stopped) {

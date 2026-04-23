@@ -1,5 +1,5 @@
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
-import { HumanMessage } from '@langchain/core/messages';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { generateText } from 'ai';
 import { createLogger } from '../log';
 import { type ProviderConfig, speechToTextModelStore } from '@extension/storage';
 import { t } from '@extension/i18n';
@@ -7,10 +7,10 @@ import { t } from '@extension/i18n';
 const logger = createLogger('SpeechToText');
 
 export class SpeechToTextService {
-  private llm: ChatGoogleGenerativeAI;
+  private readonly model: ReturnType<ReturnType<typeof createGoogleGenerativeAI>>;
 
-  private constructor(llm: ChatGoogleGenerativeAI) {
-    this.llm = llm;
+  private constructor(model: ReturnType<ReturnType<typeof createGoogleGenerativeAI>>) {
+    this.model = model;
   }
 
   static async create(providers: Record<string, ProviderConfig>): Promise<SpeechToTextService> {
@@ -28,14 +28,11 @@ export class SpeechToTextService {
         throw new Error(t('chat_stt_model_notFound'));
       }
 
-      const llm = new ChatGoogleGenerativeAI({
-        model: config.modelName,
-        apiKey: provider.apiKey,
-        temperature: 0.1,
-        topP: 0.8,
-      });
+      const googleProvider = createGoogleGenerativeAI({ apiKey: provider.apiKey });
+      const model = googleProvider(config.modelName);
+
       logger.info(`Speech-to-text service created with model: ${config.modelName}`);
-      return new SpeechToTextService(llm);
+      return new SpeechToTextService(model);
     } catch (error) {
       logger.error('Failed to create speech-to-text service:', error);
       throw error;
@@ -46,27 +43,30 @@ export class SpeechToTextService {
     try {
       logger.info('Starting audio transcription...');
 
-      // Create transcription message with audio data
-      const transcriptionMessage = new HumanMessage({
-        content: [
+      const { text } = await generateText({
+        model: this.model,
+        temperature: 0.1,
+        topP: 0.8,
+        messages: [
           {
-            type: 'text',
-            text: 'Transcribe this audio. Return only the transcribed text without any additional formatting or explanations.',
-          },
-          {
-            type: 'media',
-            data: base64Audio,
-            mimeType: 'audio/webm',
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Transcribe this audio. Return only the transcribed text without any additional formatting or explanations.',
+              },
+              {
+                type: 'file',
+                data: base64Audio,
+                mediaType: 'audio/webm',
+              },
+            ],
           },
         ],
       });
 
-      // Get transcription from Gemini
-      const transcriptionResponse = await this.llm.invoke([transcriptionMessage]);
-
-      const transcribedText = transcriptionResponse.content.toString().trim();
+      const transcribedText = text.trim();
       logger.info('Audio transcription completed:', transcribedText);
-
       return transcribedText;
     } catch (error) {
       logger.error('Failed to transcribe audio:', error);

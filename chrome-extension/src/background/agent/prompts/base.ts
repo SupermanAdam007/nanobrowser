@@ -1,32 +1,15 @@
-import { HumanMessage, type SystemMessage } from '@langchain/core/messages';
+import type { SystemModelMessage, UserModelMessage } from 'ai';
 import type { AgentContext } from '@src/background/agent/types';
 import { wrapUntrustedContent } from '../messages/utils';
 import { createLogger } from '@src/background/log';
 
 const logger = createLogger('BasePrompt');
-/**
- * Abstract base class for all prompt types
- */
+
 abstract class BasePrompt {
-  /**
-   * Returns the system message that defines the AI's role and behavior
-   * @returns SystemMessage from LangChain
-   */
-  abstract getSystemMessage(): SystemMessage;
+  abstract getSystemMessage(): SystemModelMessage;
+  abstract getUserMessage(context: AgentContext): Promise<UserModelMessage>;
 
-  /**
-   * Returns the user message for the specific prompt type
-   * @param context - Optional context data needed for generating the user message
-   * @returns HumanMessage from LangChain
-   */
-  abstract getUserMessage(context: AgentContext): Promise<HumanMessage>;
-
-  /**
-   * Builds the user message containing the browser state
-   * @param context - The agent context
-   * @returns HumanMessage from LangChain
-   */
-  async buildBrowserStateUserMessage(context: AgentContext): Promise<HumanMessage> {
+  async buildBrowserStateUserMessage(context: AgentContext): Promise<UserModelMessage> {
     const browserState = await context.browserContext.getState(context.options.useVision);
     const rawElementsText = browserState.elementTree.clickableElementsToString(context.options.includeAttributes);
 
@@ -45,7 +28,7 @@ abstract class BasePrompt {
       stepInfoDescription = `Current step: ${context.stepInfo.stepNumber + 1}/${context.stepInfo.maxSteps}`;
     }
 
-    const timeStr = new Date().toISOString().slice(0, 16).replace('T', ' '); // Format: YYYY-MM-DD HH:mm
+    const timeStr = new Date().toISOString().slice(0, 16).replace('T', ' ');
     stepInfoDescription += `Current date and time: ${timeStr}`;
 
     let actionResultsDescription = '';
@@ -56,7 +39,6 @@ abstract class BasePrompt {
           actionResultsDescription += `\nAction result ${i + 1}/${context.actionResults.length}: ${result.extractedContent}`;
         }
         if (result.error) {
-          // only use last line of error
           const error = result.error.split('\n').pop();
           actionResultsDescription += `\nAction error ${i + 1}/${context.actionResults.length}: ...${error}`;
         }
@@ -81,18 +63,16 @@ ${actionResultsDescription}
 `;
 
     if (browserState.screenshot && context.options.useVision) {
-      return new HumanMessage({
+      return {
+        role: 'user',
         content: [
           { type: 'text', text: stateDescription },
-          {
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${browserState.screenshot}` },
-          },
+          { type: 'image', image: browserState.screenshot, mediaType: 'image/jpeg' },
         ],
-      });
+      };
     }
 
-    return new HumanMessage(stateDescription);
+    return { role: 'user', content: stateDescription };
   }
 }
 

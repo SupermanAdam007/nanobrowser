@@ -85,15 +85,15 @@ export class AgentContext {
     await this.eventManager.emit(event);
   }
 
-  async pause() {
+  pause(): void {
     this.paused = true;
   }
 
-  async resume() {
+  resume(): void {
     this.paused = false;
   }
 
-  async stop() {
+  stop(): void {
     this.stopped = true;
     setTimeout(() => this.controller.abort(), 300);
   }
