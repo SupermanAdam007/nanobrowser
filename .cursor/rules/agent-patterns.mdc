@@ -1,0 +1,81 @@
+---
+description: Patterns and constraints for working with nanobrowser's multi-agent system and Vercel AI SDK integration.
+globs: ["chrome-extension/src/background/agent/**", "chrome-extension/src/background/services/**"]
+alwaysApply: false
+---
+
+# Agent & LLM Patterns
+
+## LLM Integration: Vercel AI SDK v6
+The project uses `ai` (core) + provider packages (`@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/google`, `@ai-sdk/xai`, `@ai-sdk/groq`, `@ai-sdk/azure`). LangChain.js has been fully removed.
+
+### Creating Models
+Always use `createModel()` from `agent/providers.ts` — never instantiate provider clients directly in agent code:
+```typescript
+import { createModel } from './providers';
+const agentLLM = createModel(providerConfig, modelConfig); // returns AgentLLM
+```
+
+### Invoking Models
+Use `generateObject` (structured output) or `generateText` (free-form) from `ai`:
+```typescript
+import { generateObject } from 'ai';
+const { object } = await generateObject({
+  model: agentLLM.model,
+  schema: myZodSchema,
+  messages: inputMessages,
+  abortSignal: controller.signal,
+  maxOutputTokens: agentLLM.settings.maxOutputTokens,
+  providerOptions: agentLLM.settings.providerOptions as any,
+});
+```
+
+### Message Format: `ModelMessage` (plain objects, not classes)
+```typescript
+import type { ModelMessage, SystemModelMessage, UserModelMessage, AssistantModelMessage } from 'ai';
+
+const sys: SystemModelMessage = { role: 'system', content: 'You are...' };
+const user: UserModelMessage = { role: 'user', content: 'Do X' };
+const asst: AssistantModelMessage = { role: 'assistant', content: JSON.stringify(result) };
+```
+Never use `HumanMessage`, `AIMessage`, `SystemMessage` (LangChain classes) — they no longer exist in this codebase.
+
+### Multimodal Content (images/audio)
+Use `mediaType` (not `mimeType`) for AI SDK v6:
+```typescript
+{ type: 'image', image: base64data, mediaType: 'image/jpeg' }
+{ type: 'file', data: base64audio, mediaType: 'audio/webm' }
+```
+
+### Token Limits
+Use `maxOutputTokens` (not `maxTokens`) in AI SDK v6.
+
+## Multi-Agent Architecture
+
+### Agents
+- **Navigator** (`agents/navigator.ts`) — executes DOM actions, drives the browser step-by-step
+- **Planner** (`agents/planner.ts`) — generates high-level plans for complex tasks
+
+Both extend `BaseAgent` (`agents/base.ts`). `BaseAgent.invoke()` calls `generateObject` with the agent's Zod output schema — the result is always a validated object, never raw JSON strings.
+
+### Message Flow
+1. `MessageManager` (`messages/service.ts`) — manages conversation history, token budgeting, sensitive data filtering
+2. `MessageHistory` (`messages/views.ts`) — stores `ModelMessage[]`
+3. `convertInputMessages` (`messages/utils.ts`) — handles model-specific quirks (e.g., DeepSeek requires merged consecutive messages)
+4. `BasePrompt` (`prompts/base.ts`) — constructs `UserModelMessage` with multimodal browser state
+
+### Executor (`executor.ts`)
+Orchestrates the Planner → Navigator loop. Accepts `navigatorLLM: AgentLLM` and `plannerLLM: AgentLLM`. Do not add more LLM instances here without discussing the architecture change.
+
+## Chrome Extension Constraints
+- The service worker (`background/index.ts`) is the entry point — it has a 30-second idle timeout
+- Use `abortSignal: controller.signal` in all LLM calls so tasks can be cancelled
+- `chrome.storage` (via `packages/storage/`) is the only persistent state store
+- No `Node.js` APIs in background scripts — only Web APIs (`fetch`, `crypto`, etc.)
+
+## Reasoning Models (OpenAI o-series)
+Pass `reasoningEffort` via `providerOptions`, not as a top-level param:
+```typescript
+providerOptions: { openai: { reasoningEffort: 'high' } }
+```
+This is handled automatically by `providers.ts` for o-series model names.

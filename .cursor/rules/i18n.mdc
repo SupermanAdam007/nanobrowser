@@ -1,0 +1,56 @@
+---
+description: Internationalization (i18n) conventions for nanobrowser. Apply when adding or editing user-facing strings.
+globs: ["packages/i18n/**", "**/locales/**", "**/*.ts", "**/*.tsx"]
+alwaysApply: false
+---
+
+# Internationalization (i18n)
+
+## Key Naming Pattern: `component_category_specificAction_state`
+
+### Component Prefixes
+- `bg_` — background service worker operations
+- `exec_` — executor/agent execution lifecycle
+- `act_` — agent actions and web automation
+- `errors_` — global error messages
+- `options_` — settings page
+- `chat_` — chat interface
+- `nav_` — navigation elements
+- `permissions_` — permission-related messages
+
+### State Suffixes
+- `_start` — action beginning (e.g., `act_goToUrl_start`)
+- `_ok` — successful completion (e.g., `act_goToUrl_ok`)
+- `_fail` — failure (e.g., `exec_task_fail`)
+- `_cancel` — cancelled
+- `_pause` — paused
+
+### Special Patterns
+- `_errors_` subcategory for component-specific errors: `act_errors_elementNotExist`
+- `_cmd_` for command messages: `bg_cmd_newTask_noTask`
+- `_setup_` for configuration issues: `bg_setup_noApiKeys`
+
+## Usage
+
+```typescript
+import { t } from '@extension/i18n';
+
+t('bg_errors_noTabId')                        // simple
+t('act_click_ok', ['5', 'Submit Button'])      // with placeholders
+```
+
+## Adding New Strings
+1. Edit source JSON in `packages/i18n/locales/**` (e.g., `en/messages.json`)
+2. Use Chrome i18n placeholder format:
+```json
+{
+  "act_goToUrl_start": {
+    "message": "Navigating to $URL$",
+    "placeholders": {
+      "url": { "content": "$1", "example": "https://example.com" }
+    }
+  }
+}
+```
+3. Run `pnpm -F @extension/i18n ready` to regenerate `packages/i18n/lib/**`
+4. NEVER edit generated files under `packages/i18n/lib/**` directly

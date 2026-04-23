@@ -1,0 +1,36 @@
+---
+description: Security guardrails for the nanobrowser Chrome extension. Apply when handling credentials, URLs, user data, or Chrome APIs.
+globs: ["**/*.ts", "**/*.tsx", "chrome-extension/src/**"]
+alwaysApply: false
+---
+
+# Security Guidelines
+
+## Credentials & Secrets
+- NEVER log, commit, expose, or console.log API keys, tokens, or user credentials
+- Store secrets in `.env.local` (git-ignored); prefix with `VITE_` for Vite access
+- Example: `VITE_POSTHOG_API_KEY` — loaded by `chrome-extension/vite.config.mts`
+- LLM API keys live in `chrome.storage` via `packages/storage/` — never in source
+
+## Chrome Extension Permissions
+- Request minimal permissions in `manifest.json` — principle of least privilege
+- `chrome.debugger` attaches to tabs on demand; always detach in `onDetach` listener
+- Never open raw CDP port 9222; always use `chrome.debugger` API
+
+## Content Security Policy
+- Never use `eval()` or `new Function()` — violates MV3 CSP and is blocked
+- Never use `innerHTML` with user-controlled or page-sourced content — use textContent or sanitize first
+- DOM injection via content scripts must sanitize before rendering
+
+## Input Validation
+- Validate and sanitize all user-provided URLs before navigating — check protocol, reject `javascript:` and `data:` schemes
+- Validate LLM responses before using them to drive browser actions
+- Sanitize content extracted from web pages before storing or displaying
+
+## Error Handling
+- Never surface raw error objects to the UI — they may contain sensitive path or key information
+- Use structured error messages: `logger.error('context: message', { safeData })` not `logger.error(error)`
+
+## Data Privacy
+- Avoid logging page content, form values, or screenshot data to persistent storage
+- PostHog analytics: only send anonymized event names, never PII or page content

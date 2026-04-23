@@ -1,0 +1,36 @@
+---
+description: Code style, naming conventions, and formatting rules for the nanobrowser monorepo.
+globs: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+alwaysApply: false
+---
+
+# Code Style & Naming
+
+## Formatting (Prettier)
+- 2-space indentation, semicolons, single quotes, trailing commas, `printWidth: 120`
+- Run formatter: `pnpm -F <workspace> prettier -- <file>`
+
+## Naming
+- Components: `PascalCase`
+- Variables, functions, methods: `camelCase`
+- Workspace/package directories: `kebab-case`
+- Constants: `UPPER_SNAKE_CASE`
+
+## TypeScript
+- Always use `import type { ... }` for type-only imports (`@typescript-eslint/consistent-type-imports`)
+- Avoid `any`; if unavoidable, add `// eslint-disable-next-line @typescript-eslint/no-explicit-any` with a comment explaining why
+- Prefer explicit return types on exported functions
+
+## Module Boundaries
+- Background service worker (`chrome-extension/src/background/`) is the only place that touches LLM/agent logic
+- UI pages (`pages/`) communicate with the background via Chrome messaging only — no direct agent imports
+- Shared logic belongs in `packages/`; never duplicate across workspaces
+
+## Vite Path Aliases
+- `chrome-extension/`: `@root`, `@src`, `@assets` (see `chrome-extension/vite.config.mts`)
+- `pages/*`: `@src` (use `packages/vite-config`'s `withPageConfig`)
+- Never use relative `../../` imports across workspace boundaries — use the alias or a package import
+
+## Do Not Touch
+- `dist/**`, `build/**`, `packages/i18n/lib/**` — generated, do not edit
+- `turbo.json`, `pnpm-workspace.yaml`, root `tsconfig*` — require approval

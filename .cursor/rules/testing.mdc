@@ -1,0 +1,35 @@
+---
+description: Testing standards for nanobrowser — unit test location, patterns, and what to mock.
+globs: ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts"]
+alwaysApply: false
+---
+
+# Testing Standards
+
+## Framework & Location
+- Framework: Vitest
+- Location: `chrome-extension/src/**/__tests__/` with `*.test.ts` naming
+- Run all: `pnpm -F chrome-extension test`
+- Run targeted: `pnpm -F chrome-extension test -- -t "test name"`
+
+## What to Test
+- Business logic in `agent/` — message construction, provider selection, token counting, action parsing
+- Utility functions in `utils.ts`, `messages/utils.ts`, `messages/service.ts`
+- Schema validation in `packages/schema-utils/`
+- Do NOT write tests for React UI components unless they contain logic
+
+## Mocking
+- Mock Chrome APIs (`chrome.storage`, `chrome.tabs`, `chrome.debugger`) — they don't exist in Vitest
+- Mock network calls (`fetch`, AI SDK `generateObject`/`generateText`) — tests must be deterministic and offline
+- Use `vi.mock()` at the module level, not inside test bodies
+- Prefer minimal mocks that test actual logic paths, not just mock call counts
+
+## Test Quality
+- Each test must have a clear failure message explaining what broke and why
+- Prefer testing behavior (what the function returns/throws) over implementation (which internal function was called)
+- When an agent bug is fixed, add a regression test to prevent recurrence
+- Tests that hit real LLM APIs are not unit tests — put them in `e2e/` only
+
+## Vitest Config Notes
+- The Vitest config lives in `chrome-extension/vite.config.mts`
+- Workspace packages (`@extension/dev-utils`, `@extension/hmr`) must be built before tests run; if you see "failed to resolve entry", run `pnpm ready` in the relevant package first
