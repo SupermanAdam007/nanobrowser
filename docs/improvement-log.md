@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-04-23 — Reduce planner latency (trim schema, raise planningInterval)
+
+**Trigger**: 1 session analyzed, 100% completion, 55s total for 3 trivial steps (go_to_url → click → done)
+
+**Top weaknesses found**:
+- Planner schema required `challenges`, `reasoning`, `web_task` — ~200 extra output tokens per planning call, zero of which are consumed by execution code
+- `planningInterval=3` caused 1 planner call per navigator step ratio for short tasks
+
+**Changes made**:
+- `planner.ts`: removed `challenges`, `reasoning`, `web_task` from schema and execute() logic
+- `templates/planner.ts`: rewrote prompt to match 4-field schema (`observation`, `done`, `next_steps`, `final_answer`); removed web_task branching (-40 lines)
+- `generalSettings.ts`: raised default `planningInterval` from 3 → 5
+
+**Expected improvement**: ~30-40% fewer planner output tokens per call; ~40% fewer planner invocations on 5-9 step tasks. Same 3-step task should now complete in ~35-40s instead of 55s.
+
+---
+
 ## 2026-04-23 — Fix missing step timing and token counts in session logs
 
 **Trigger**: 2 sessions analyzed, 50% completion rate; successful session had correct behavior but all `durationMs=0` and `inputTokens=0`
