@@ -28,6 +28,8 @@ export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
   protected actions: Record<string, Action> = {};
   protected modelOutputSchema: T;
   declare ModelOutput: z.infer<T>;
+  /** Input token count from the most recent invoke() call. */
+  lastInputTokens = 0;
 
   constructor(modelOutputSchema: T, options: BaseAgentOptions, extraOptions?: Partial<ExtraAgentOptions>) {
     this.modelOutputSchema = modelOutputSchema;
@@ -50,7 +52,7 @@ export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
     logger.debug(`[${this.modelId}] Invoking generateObject`, { messageCount: inputMessages.length });
 
     try {
-      const { object } = await generateObject({
+      const { object, usage } = await generateObject({
         model: this.llm.model,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         schema: this.modelOutputSchema as any,
@@ -64,7 +66,8 @@ export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
         providerOptions: this.llm.settings.providerOptions as any,
       });
 
-      logger.debug(`[${this.modelId}] generateObject succeeded`);
+      this.lastInputTokens = usage?.inputTokens ?? 0;
+      logger.debug(`[${this.modelId}] generateObject succeeded`, { inputTokens: this.lastInputTokens });
       return object;
     } catch (error) {
       if (isAbortedError(error)) throw error;

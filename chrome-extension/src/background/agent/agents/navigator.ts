@@ -25,6 +25,7 @@ import { calcBranchPathHashSet } from '@src/background/browser/dom/views';
 import { type BrowserState, BrowserStateHistory, URLNotAllowedError } from '@src/background/browser/views';
 import { HistoryTreeProcessor } from '@src/background/browser/dom/history/service';
 import { AgentStepRecord } from '../history';
+import { StepMetadata } from '../types';
 import { type DOMHistoryElement } from '@src/background/browser/dom/history/view';
 import { parseHistoryModelOutput, updateActionIndices, type ParsedModelOutput } from './navigator-replay';
 
@@ -86,6 +87,7 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     let modelOutputString: string | null = null;
     let browserStateHistory: BrowserStateHistory | null = null;
     let actionResults: ActionResult[] = [];
+    const stepStartTime = Date.now() / 1000;
 
     try {
       this.context.emitEvent(Actors.NAVIGATOR, ExecutionState.STEP_START, 'Navigating...');
@@ -183,7 +185,8 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
           });
         });
 
-        const history = new AgentStepRecord(modelOutputString, actionResultsCopy, browserStateHistory);
+        const metadata = new StepMetadata(stepStartTime, Date.now() / 1000, this.lastInputTokens, this.context.nSteps);
+        const history = new AgentStepRecord(modelOutputString, actionResultsCopy, browserStateHistory, metadata);
         this.context.history.history.push(history);
 
         // logger.info('All history', JSON.stringify(this.context.history, null, 2));
