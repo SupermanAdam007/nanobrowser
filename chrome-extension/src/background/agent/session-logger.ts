@@ -7,7 +7,7 @@ const logger = createLogger('SessionLogger');
 
 export class SessionLogger {
   private readonly log: SessionLog;
-  private pendingPlan?: { nextSteps: string; observation: string };
+  private pendingPlan?: { nextSteps: string; observation: string; rawOutput?: string };
 
   constructor(id: string, task: string, navigatorModel: string, plannerModel: string) {
     this.log = {
@@ -23,8 +23,8 @@ export class SessionLogger {
     };
   }
 
-  recordPlan(nextSteps: string, observation: string): void {
-    this.pendingPlan = { nextSteps, observation };
+  recordPlan(nextSteps: string, observation: string, rawOutput?: string): void {
+    this.pendingPlan = { nextSteps, observation, rawOutput };
   }
 
   recordStep(record: AgentStepRecord): void {
@@ -65,6 +65,8 @@ export class SessionLogger {
       inputTokens: record.metadata?.inputTokens ?? 0,
       plannerNextSteps: this.pendingPlan?.nextSteps,
       plannerObservation: this.pendingPlan?.observation,
+      rawNavigatorOutput: record.modelOutput ?? undefined,
+      rawPlannerOutput: this.pendingPlan?.rawOutput,
     };
 
     this.log.stepSummaries.push(summary);

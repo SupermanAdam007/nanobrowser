@@ -51,11 +51,16 @@ export function createModel(providerConfig: ProviderConfig, modelConfig: ModelCo
   const isReasoning = isOpenAIReasoningModel(modelName);
 
   switch (modelConfig.provider as ProviderTypeEnum) {
-    case ProviderTypeEnum.OpenAI:
+    case ProviderTypeEnum.OpenAI: {
+      // Use .chat() to target the Chat Completions API (/v1/chat/completions).
+      // createOpenAI()(modelName) in @ai-sdk/openai v3 now defaults to the Responses API
+      // (/v1/responses) which supports fewer models and breaks structured output on some providers.
+      const openai = createOpenAI({ apiKey: providerConfig.apiKey });
       return {
-        model: createOpenAI({ apiKey: providerConfig.apiKey })(modelName),
+        model: openai.chat(modelName),
         settings: isReasoning ? openAIReasoningSettings(modelConfig) : standardSettings(temperature, topP),
       };
+    }
 
     case ProviderTypeEnum.AzureOpenAI: {
       const baseUrl = providerConfig.baseUrl ?? '';
@@ -109,7 +114,7 @@ export function createModel(providerConfig: ProviderConfig, modelConfig: ModelCo
     case ProviderTypeEnum.Ollama: {
       const baseURL = `${(providerConfig.baseUrl ?? 'http://localhost:11434').replace(/\/$/, '')}/v1`;
       return {
-        model: createOpenAI({ apiKey: 'ollama', baseURL })(modelName),
+        model: createOpenAI({ apiKey: 'ollama', baseURL }).chat(modelName),
         settings: standardSettings(temperature, topP),
       };
     }
@@ -120,34 +125,35 @@ export function createModel(providerConfig: ProviderConfig, modelConfig: ModelCo
           apiKey: providerConfig.apiKey,
           baseURL: OPENROUTER_BASE_URL,
           headers: { 'HTTP-Referer': 'https://nanobrowser.ai', 'X-Title': 'Nanobrowser' },
-        })(modelName),
+        }).chat(modelName),
         settings: isReasoning ? openAIReasoningSettings(modelConfig) : standardSettings(temperature, topP),
       };
 
     case ProviderTypeEnum.DeepSeek:
       return {
-        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: DEEPSEEK_BASE_URL })(modelName),
+        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: DEEPSEEK_BASE_URL }).chat(modelName),
         settings: standardSettings(temperature, topP),
       };
 
     case ProviderTypeEnum.Cerebras:
       return {
-        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: CEREBRAS_BASE_URL })(modelName),
+        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: CEREBRAS_BASE_URL }).chat(modelName),
         settings: standardSettings(temperature, topP),
       };
 
     case ProviderTypeEnum.Llama:
       return {
-        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: providerConfig.baseUrl ?? LLAMA_BASE_URL })(
-          modelName,
-        ),
+        model: createOpenAI({
+          apiKey: providerConfig.apiKey,
+          baseURL: providerConfig.baseUrl ?? LLAMA_BASE_URL,
+        }).chat(modelName),
         settings: standardSettings(temperature, topP),
       };
 
     default:
       // CustomOpenAI and any other OpenAI-compatible provider
       return {
-        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: providerConfig.baseUrl })(modelName),
+        model: createOpenAI({ apiKey: providerConfig.apiKey, baseURL: providerConfig.baseUrl }).chat(modelName),
         settings: isReasoning ? openAIReasoningSettings(modelConfig) : standardSettings(temperature, topP),
       };
   }

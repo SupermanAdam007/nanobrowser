@@ -147,7 +147,11 @@ export class Executor {
           navigatorDone = false;
           latestPlanOutput = await this.runPlanner();
           if (latestPlanOutput?.result) {
-            sessionLogger.recordPlan(latestPlanOutput.result.next_steps, latestPlanOutput.result.observation);
+            sessionLogger.recordPlan(
+              latestPlanOutput.result.next_steps,
+              latestPlanOutput.result.observation,
+              JSON.stringify(latestPlanOutput.result),
+            );
           }
           if (this.checkTaskCompletion(latestPlanOutput)) break;
         }
